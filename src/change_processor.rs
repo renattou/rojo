@@ -1,6 +1,7 @@
 use std::{
     fs,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use crossbeam_channel::{select, Receiver, RecvError, Sender};
@@ -54,6 +55,24 @@ impl ChangeProcessor {
     ) -> Self {
         let (shutdown_sender, shutdown_receiver) = crossbeam_channel::bounded(1);
         let vfs_receiver = vfs.event_receiver();
+
+        // Safety-net reconcile: re-snapshot the tree from the root on a timer so
+        // changes are still picked up when the OS file watcher silently stops
+        // delivering events. notify loses its recursive watch when a watched
+        // directory is removed and recreated (which `git` does on branch/commit
+        // switches) or when the FSEvents / ReadDirectoryChangesW stream dies
+        // (sleep/wake) -- in both cases with NO error or rescan signal. Tune with
+        // ROJO_RECONCILE_INTERVAL_SECS (seconds); set to 0 to disable.
+        let reconcile_interval_secs = std::env::var("ROJO_RECONCILE_INTERVAL_SECS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(2);
+        let reconcile_tick = if reconcile_interval_secs == 0 {
+            crossbeam_channel::never::<std::time::Instant>()
+        } else {
+            crossbeam_channel::tick(Duration::from_secs(reconcile_interval_secs))
+        };
+
         let task = JobThreadContext {
             tree,
             vfs,
@@ -72,6 +91,10 @@ impl ChangeProcessor {
                         },
                         recv(tree_mutation_receiver) -> patch_set => {
                             task.handle_tree_event(patch_set?);
+                        },
+                        recv(reconcile_tick) -> _ => {
+                            // Periodic safety-net re-sync (see reconcile_tick above).
+                            task.handle_vfs_event(VfsEvent::Rescan);
                         },
                         recv(shutdown_receiver) -> _ => {
                             log::trace!("ChangeProcessor shutdown signal received...");
@@ -159,6 +182,41 @@ impl JobThreadContext {
                     }
                 }
 
+                applied_patches
+            }
+            VfsEvent::Rescan => {
+                // Re-snapshot the entire tree from the root. Fired both when notify
+                // signals a dropped-events rescan AND on the periodic safety-net
+                // timer, because notify can silently stop delivering events with no
+                // signal at all -- it loses the recursive watch when a watched
+                // directory is removed and recreated (every `git` branch/commit
+                // switch that adds or drops a dir) or when the watch stream dies on
+                // sleep/wake. VFS reads hit disk fresh, so this reconciles a stale
+                // tree -- the root cause of "Rojo silently stops syncing".
+                log::debug!("Rescan: re-snapshotting tree from root");
+                let mut tree = self.tree.lock().unwrap();
+                let root_id = tree.get_root_id();
+                let mut applied_patches = Vec::new();
+                if let Some(patch) = compute_and_apply_changes(&mut tree, &self.vfs, root_id) {
+                    // Re-snapshotting the project root re-derives internal metadata
+                    // (path-ignore Globs don't compare equal across snapshots), which
+                    // surfaces as a metadata-only "change" on the root every tick.
+                    // Only forward patches with real instance changes, so idle
+                    // reconciles stay silent and don't spam connected clients.
+                    let has_real_change = !patch.removed.is_empty()
+                        || !patch.added.is_empty()
+                        || patch.updated.iter().any(|u| {
+                            u.changed_name.is_some()
+                                || u.changed_class_name.is_some()
+                                || !u.changed_properties.is_empty()
+                        });
+                    if has_real_change {
+                        log::debug!(
+                            "Reconcile picked up change(s) the file watcher did not report"
+                        );
+                        applied_patches.push(patch);
+                    }
+                }
                 applied_patches
             }
             _ => {

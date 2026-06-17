@@ -134,6 +134,11 @@ pub enum VfsEvent {
     Create(PathBuf),
     Write(PathBuf),
     Remove(PathBuf),
+    /// The filesystem watcher may have missed events — e.g. the OS notification
+    /// buffer overflowed during a bulk change like a `git` checkout/merge, or the
+    /// watch had to be re-established. Consumers should re-scan watched roots from
+    /// disk to recover, rather than trusting incremental events alone.
+    Rescan,
 }
 
 /// Contains implementation details of the Vfs, wrapped by `Vfs` and `VfsLock`,

@@ -39,6 +39,19 @@ impl StdBackend {
                         tx.send(VfsEvent::Remove(from))?;
                         tx.send(VfsEvent::Create(to))?;
                     }
+                    // notify tells us it may have dropped events: the OS notification
+                    // buffer overflowed (e.g. a bulk `git` checkout/merge/rebase) or
+                    // the watch needs re-establishing. Forward a Rescan so the consumer
+                    // re-syncs from disk instead of silently going stale. notify raises
+                    // this on BOTH macOS (FSEvents MustScanSubDirs) and Windows
+                    // (ReadDirectoryChangesW buffer overflow).
+                    DebouncedEvent::Rescan => {
+                        tx.send(VfsEvent::Rescan)?;
+                    }
+                    // A watcher error likewise means our view may be stale.
+                    DebouncedEvent::Error(_, _) => {
+                        tx.send(VfsEvent::Rescan)?;
+                    }
                     _ => {}
                 }
             }
