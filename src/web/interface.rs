@@ -41,11 +41,18 @@ impl<'a> SubscribeMessage<'a> {
 
         let mut added = HashMap::new();
         for id in patch.added {
-            let instance = tree.get_instance(id).unwrap();
-            added.insert(id, Instance::from_rojo_instance(instance));
+            // A patch can report an instance as added that a later change has
+            // already removed before this message is built -- rapid churn, e.g. a
+            // Wally Packages reinstall that writes then replaces files in quick
+            // succession. Skip ids no longer in the tree instead of unwrapping and
+            // crashing the whole serve; this matches the defensive lookups in
+            // web::api, and the matching removal is delivered by the later patch.
+            if let Some(instance) = tree.get_instance(id) {
+                added.insert(id, Instance::from_rojo_instance(instance));
 
-            for instance in tree.descendants(id) {
-                added.insert(instance.id(), Instance::from_rojo_instance(instance));
+                for instance in tree.descendants(id) {
+                    added.insert(instance.id(), Instance::from_rojo_instance(instance));
+                }
             }
         }
 
