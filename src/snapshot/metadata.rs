@@ -124,6 +124,15 @@ pub struct InstanceContext {
     pub emit_legacy_scripts: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub sync_rules: Vec<SyncRule>,
+
+    /// When true, a missing Required `$path` skips just that project node
+    /// instead of failing the whole snapshot. Enabled only for post-startup
+    /// re-snapshots (the change/reconcile path), never the initial load, so a
+    /// transiently-missing directory (e.g. during a git operation, or one not
+    /// yet installed) can't poison the periodic reconcile. Runtime-only state,
+    /// never serialized.
+    #[serde(skip)]
+    pub lenient_missing_paths: bool,
 }
 
 impl InstanceContext {
@@ -132,6 +141,7 @@ impl InstanceContext {
             path_ignore_rules: Arc::new(Vec::new()),
             emit_legacy_scripts: emit_legacy_scripts_default().unwrap(),
             sync_rules: Vec::new(),
+            lenient_missing_paths: false,
         }
     }
 

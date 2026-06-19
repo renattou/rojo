@@ -337,6 +337,15 @@ fn compute_and_apply_changes(tree: &mut RojoTree, vfs: &Vfs, id: Ref) -> Option<
         }
     };
 
+    // Re-snapshots from this function are post-startup (changes + the periodic
+    // reconcile), so run them in lenient mode: a Required $path that can't be
+    // resolved right now (transient during a git operation, or not yet
+    // installed) skips just that node instead of poisoning the whole
+    // re-snapshot and flooding errors. The initial project load is strict and
+    // never reaches this function.
+    let mut context = metadata.context.clone();
+    context.lenient_missing_paths = true;
+
     // How we process a file change event depends on what created this
     // file/folder in the first place.
     let applied_patch_set = match instigating_source {
@@ -346,7 +355,7 @@ fn compute_and_apply_changes(tree: &mut RojoTree, vfs: &Vfs, id: Ref) -> Option<
                 // path still exists. We can generate a snapshot starting at
                 // that path and use it as the source for our patch.
 
-                let snapshot = match snapshot_from_vfs(&metadata.context, vfs, path) {
+                let snapshot = match snapshot_from_vfs(&context, vfs, path) {
                     Ok(snapshot) => snapshot,
                     Err(err) => {
                         log::error!("Snapshot error: {:?}", err);
@@ -381,7 +390,7 @@ fn compute_and_apply_changes(tree: &mut RojoTree, vfs: &Vfs, id: Ref) -> Option<
             // the project file, we snapshot the entire project node again.
 
             let snapshot_result = snapshot_project_node(
-                &metadata.context,
+                &context,
                 project_path,
                 instance_name,
                 project_node,

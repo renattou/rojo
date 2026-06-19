@@ -184,6 +184,20 @@ pub fn snapshot_project_node(
         }
 
         (_, None, _, Some(PathNode::Required(path))) => {
+            // On post-startup re-snapshots we tolerate a Required $path that
+            // momentarily can't be resolved (a directory removed mid-git-operation,
+            // or one that isn't installed yet): skip just this node so the rest of
+            // the tree still reconciles, instead of bailing the whole snapshot and
+            // flooding errors every reconcile tick. The initial project load keeps
+            // the strict fail-fast behavior (lenient_missing_paths is false there).
+            if context.lenient_missing_paths {
+                log::debug!(
+                    "Skipping unresolved Required $path during re-snapshot: {} (project {})",
+                    path.display(),
+                    project_path.display(),
+                );
+                return Ok(None);
+            }
             anyhow::bail!(
                 "Rojo project referred to a file using $path that could not be turned into a Roblox Instance by Rojo.\n\
                 Check that the file exists and is a file type known by Rojo.\n\
